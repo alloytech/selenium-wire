@@ -1,12 +1,13 @@
 import contextlib
 import copy
 import functools
+import inspect
 import pprint
 import textwrap
 import typing
+import weakref
 
 import blinker
-import blinker._saferef
 
 from seleniumwire.thirdparty.mitmproxy import exceptions
 from seleniumwire.thirdparty.mitmproxy.utils import typecheck
@@ -16,6 +17,13 @@ from seleniumwire.thirdparty.mitmproxy.utils import typecheck
 """
 
 unset = object()
+
+
+def _safe_ref(func):
+    # Bound methods need WeakMethod; plain callables use a normal weakref.
+    if inspect.ismethod(func):
+        return weakref.WeakMethod(func)
+    return weakref.ref(func)
 
 
 class _Option:
@@ -133,9 +141,8 @@ class OptManager:
             if i not in self._options:
                 raise exceptions.OptionsError("No such option: %s" % i)
 
-        # We reuse blinker's safe reference functionality to cope with weakrefs
-        # to bound methods.
-        func = blinker._saferef.safe_ref(func)
+        # Weakref the callback so it can go out of scope; cope with bound methods.
+        func = _safe_ref(func)
 
         @functools.wraps(func)
         def _call(options, updated):
