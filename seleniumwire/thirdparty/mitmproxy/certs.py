@@ -3,14 +3,14 @@ import datetime
 import ipaddress
 import os
 import ssl
-import sys
-import time
 import typing
 
 import OpenSSL
-from pyasn1.codec.der.decoder import decode
-from pyasn1.error import PyAsn1Error
-from pyasn1.type import char, constraint, namedtype, tag, univ
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import pkcs12
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from seleniumwire.thirdparty.mitmproxy.coretypes import serializable
 
@@ -37,47 +37,42 @@ rD693XKIHUCWOjMh1if6omGXKHH40QuME2gNa50+YPn1iYDl88uDbbMCAQI=
 
 
 def create_ca(organization, cn, exp, key_size):
-    key = OpenSSL.crypto.PKey()
-    key.generate_key(OpenSSL.crypto.TYPE_RSA, key_size)
-    cert = OpenSSL.crypto.X509()
-    cert.set_serial_number(int(time.time() * 10000))
-    cert.set_version(2)
-    cert.get_subject().CN = cn
-    cert.get_subject().O = organization
-    cert.gmtime_adj_notBefore(-3600 * 48)
-    cert.gmtime_adj_notAfter(exp)
-    cert.set_issuer(cert.get_subject())
-    cert.set_pubkey(key)
-    cert.add_extensions([
-        OpenSSL.crypto.X509Extension(
-            b"basicConstraints",
-            True,
-            b"CA:TRUE"
-        ),
-        OpenSSL.crypto.X509Extension(
-            b"nsCertType",
-            False,
-            b"sslCA"
-        ),
-        OpenSSL.crypto.X509Extension(
-            b"extendedKeyUsage",
-            False,
-            b"serverAuth,clientAuth,emailProtection,timeStamping,msCodeInd,msCodeCom,msCTLSign,msSGC,msEFS,nsSGC"
-        ),
-        OpenSSL.crypto.X509Extension(
-            b"keyUsage",
-            True,
-            b"keyCertSign, cRLSign"
-        ),
-        OpenSSL.crypto.X509Extension(
-            b"subjectKeyIdentifier",
-            False,
-            b"hash",
-            subject=cert
-        ),
+    key = rsa.generate_private_key(public_exponent=65537, key_size=key_size)
+    name = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, cn),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization),
     ])
-    cert.sign(key, "sha256")
-    return key, cert
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .serial_number(x509.random_serial_number())
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .not_valid_before(now - datetime.timedelta(hours=48))
+        .not_valid_after(now + datetime.timedelta(seconds=exp))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+        .sign(private_key=key, algorithm=hashes.SHA256())
+    )
+    return (
+        OpenSSL.crypto.PKey.from_cryptography_key(key),
+        OpenSSL.crypto.X509.from_cryptography(cert),
+    )
 
 
 def dummy_cert(privkey, cacert, commonname, sans, organization):
@@ -92,48 +87,43 @@ def dummy_cert(privkey, cacert, commonname, sans, organization):
 
         Returns cert if operation succeeded, None if not.
     """
-    ss = []
-    for i in sans:
-        try:
-            ipaddress.ip_address(i.decode("ascii"))
-        except ValueError:
-            ss.append(b"DNS:%s" % i)
-        else:
-            ss.append(b"IP:%s" % i)
-    ss = b", ".join(ss)
+    ck_privkey = privkey.to_cryptography_key()
+    ck_cacert = cacert.to_cryptography()
 
-    cert = OpenSSL.crypto.X509()
-    cert.gmtime_adj_notBefore(-3600 * 48)
-    cert.gmtime_adj_notAfter(DEFAULT_EXP_DUMMY_CERT)
-    cert.set_issuer(cacert.get_subject())
-    is_valid_commonname = (
-        commonname is not None and len(commonname) < 64
-    )
+    altnames: typing.List[x509.GeneralName] = []
+    for i in sans:
+        name = i.decode("ascii")
+        try:
+            altnames.append(x509.IPAddress(ipaddress.ip_address(name)))
+        except ValueError:
+            altnames.append(x509.DNSName(name))
+
+    is_valid_commonname = commonname is not None and len(commonname) < 64
+    subject = []
     if is_valid_commonname:
-        cert.get_subject().CN = commonname
+        subject.append(x509.NameAttribute(NameOID.COMMON_NAME, commonname.decode("utf-8")))
     if organization is not None:
-        cert.get_subject().O = organization
-    cert.set_serial_number(int(time.time() * 10000))
-    if ss:
-        cert.set_version(2)
-        cert.add_extensions(
-            [OpenSSL.crypto.X509Extension(
-                b"subjectAltName",
-                # RFC 5280 §4.2.1.6: subjectAltName is critical if subject is empty.
-                not is_valid_commonname,
-                ss
-            )]
+        subject.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization.decode("utf-8")))
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    builder = (
+        x509.CertificateBuilder()
+        .serial_number(x509.random_serial_number())
+        .subject_name(x509.Name(subject))
+        .issuer_name(ck_cacert.subject)
+        .public_key(ck_cacert.public_key())
+        .not_valid_before(now - datetime.timedelta(hours=48))
+        .not_valid_after(now + datetime.timedelta(seconds=DEFAULT_EXP_DUMMY_CERT))
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH]),
+            critical=False,
         )
-    cert.add_extensions([
-        OpenSSL.crypto.X509Extension(
-            b"extendedKeyUsage",
-            False,
-            b"serverAuth,clientAuth"
-        )
-    ])
-    cert.set_pubkey(cacert.get_pubkey())
-    cert.sign(privkey, "sha256")
-    return Cert(cert)
+    )
+    if altnames:
+        # RFC 5280 §4.2.1.6: subjectAltName is critical if subject is empty.
+        builder = builder.add_extension(x509.SubjectAlternativeName(altnames), critical=not is_valid_commonname)
+    cert = builder.sign(private_key=ck_privkey, algorithm=hashes.SHA256())
+    return Cert(OpenSSL.crypto.X509.from_cryptography(cert))
 
 
 class CertStoreEntry:
@@ -184,16 +174,9 @@ class CertStore:
             with open(path, "wb") as f:
                 f.write(DEFAULT_DHPARAM)
 
-        bio = OpenSSL.SSL._lib.BIO_new_file(path.encode(sys.getfilesystemencoding()), b"r")
-        if bio != OpenSSL.SSL._ffi.NULL:
-            bio = OpenSSL.SSL._ffi.gc(bio, OpenSSL.SSL._lib.BIO_free)
-            dh = OpenSSL.SSL._lib.PEM_read_bio_DHparams(
-                bio,
-                OpenSSL.SSL._ffi.NULL,
-                OpenSSL.SSL._ffi.NULL,
-                OpenSSL.SSL._ffi.NULL)
-            dh = OpenSSL.SSL._ffi.gc(dh, OpenSSL.SSL._lib.DH_free)
-            return dh
+        # Custom DH parameters are not configured on the TLS context; modern
+        # cipher suites negotiate key exchange over ECDHE instead.
+        return None
 
     @classmethod
     def from_store(cls, path, basename, key_size, passphrase: typing.Optional[bytes] = None):
@@ -265,16 +248,25 @@ class CertStore:
 
         # Dump the certificate in PKCS12 format for Windows devices
         with open(os.path.join(path, basename + "-ca-cert.p12"), "wb") as f:
-            p12 = OpenSSL.crypto.PKCS12()
-            p12.set_certificate(ca)
-            f.write(p12.export())
+            f.write(
+                pkcs12.serialize_key_and_certificates(
+                    name=basename.encode(),
+                    key=None,
+                    cert=ca.to_cryptography(),
+                    cas=None,
+                    encryption_algorithm=serialization.NoEncryption(),
+                ))
 
         # Dump the certificate and key in a PKCS12 format for Windows devices
         with CertStore.umask_secret(), open(os.path.join(path, basename + "-ca.p12"), "wb") as f:
-            p12 = OpenSSL.crypto.PKCS12()
-            p12.set_certificate(ca)
-            p12.set_privatekey(key)
-            f.write(p12.export())
+            f.write(
+                pkcs12.serialize_key_and_certificates(
+                    name=basename.encode(),
+                    key=key.to_cryptography_key(),
+                    cert=ca.to_cryptography(),
+                    cas=None,
+                    encryption_algorithm=serialization.NoEncryption(),
+                ))
 
         with open(os.path.join(path, basename + "-dhparam.pem"), "wb") as f:
             f.write(DEFAULT_DHPARAM)
@@ -369,24 +361,6 @@ class CertStore:
             self.expire(entry)
 
         return entry.cert, entry.privatekey, entry.chain_file
-
-
-class _GeneralName(univ.Choice):
-    # We only care about dNSName and iPAddress
-    componentType = namedtype.NamedTypes(
-        namedtype.NamedType('dNSName', char.IA5String().subtype(
-            implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 2)
-        )),
-        namedtype.NamedType('iPAddress', univ.OctetString().subtype(
-            implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 7)
-        )),
-    )
-
-
-class _GeneralNames(univ.SequenceOf):
-    componentType = _GeneralName()
-    sizeSpec = univ.SequenceOf.sizeSpec + \
-        constraint.ValueSizeConstraint(1, 1024)
 
 
 class Cert(serializable.Serializable):
@@ -489,17 +463,11 @@ class Cert(serializable.Serializable):
             All DNS altnames.
         """
         # tcp.TCPClient.convert_to_tls assumes that this property only contains DNS altnames for hostname verification.
-        altnames = []
-        for i in range(self.x509.get_extension_count()):
-            ext = self.x509.get_extension(i)
-            if ext.get_short_name() == b"subjectAltName":
-                try:
-                    dec = decode(ext.get_data(), asn1Spec=_GeneralNames())
-                except PyAsn1Error:
-                    continue
-                for i in dec[0]:
-                    if i[0].hasValue():
-                        e = i[0].asOctets()
-                        altnames.append(e)
+        try:
+            ext = self.x509.to_cryptography().extensions.get_extension_for_class(
+                x509.SubjectAlternativeName
+            )
+        except x509.ExtensionNotFound:
+            return []
 
-        return altnames
+        return [name.encode("ascii") for name in ext.value.get_values_for_type(x509.DNSName)]
