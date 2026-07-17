@@ -59,18 +59,20 @@ setup(
             'bumpversion',
             'coverage',
             'flake8',
+            'flask',  # Serves the httpbin-compatible test stub (tests/httpbin_stub.py)
             'gunicorn',
-            'httpbin',
             'isort',
-            "mitmproxy>5.3.0; python_version>='3.8.0'",  # Needed for end2end tests
             'mypy',
             'pre-commit',
             'pytest',
             'pytest-cov',
+            'setuptools<81',  # provides pkg_resources, used by the vendored kaitaistruct TLS parser
             'tox',
             'twine',
-            'werkzeug==2.0.3',
             'wheel',
+        ],
+        'e2e': [
+            "mitmproxy>5.3.0; python_version>='3.8.0'",  # Upstream proxy for end2end tests
         ],
     },
     keywords='selenium-wire',
@@ -80,6 +82,6 @@ setup(
     test_suite='tests.seleniumwire',
     tests_require=['pytest'],
     url='https://github.com/wkeeling/selenium-wire',
-    version='5.1.2',
+    version='5.1.3',
     zip_safe=False,
 )

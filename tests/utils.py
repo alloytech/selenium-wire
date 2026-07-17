@@ -5,11 +5,11 @@ from pathlib import Path
 
 
 class Httpbin:
-    """Create and manage a httpbin server.
+    """Create and manage a local httpbin-compatible server.
 
-    Creating a new instance of this class will spawn a httpbin server
-    in a subprocess. Clients should call the shutdown() method when they
-    are finished with the server.
+    Creating a new instance of this class will spawn the Flask stub in
+    tests/httpbin_stub.py in a subprocess. Clients should call the
+    shutdown() method when they are finished with the server.
 
     Only compatible on non-Windows systems.
     """
@@ -42,7 +42,9 @@ class Httpbin:
             args.append(f'--certfile={cert}')
             args.append(f'--keyfile={key}')
 
-        args.append('httpbin:app')
+        repo_root = Path(__file__).resolve().parent.parent
+        args.append(f'--pythonpath={repo_root}')
+        args.append('tests.httpbin_stub:app')
 
         self.proc = subprocess.Popen(args, bufsize=0, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
