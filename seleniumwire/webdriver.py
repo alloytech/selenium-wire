@@ -1,12 +1,7 @@
 from typing import Any, Dict
 
 import selenium
-
-try:
-    from packaging.version import parse as parse_version
-except ImportError:
-    from pkg_resources import parse_version
-
+from packaging.version import parse as parse_version
 from selenium.webdriver import ActionChains  # noqa
 from selenium.webdriver import FirefoxOptions  # noqa
 from selenium.webdriver import FirefoxProfile  # noqa

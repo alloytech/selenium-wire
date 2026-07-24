@@ -39,6 +39,7 @@ setup(
         "h2>=4.0; python_version>='3.6.0'",
         "hyperframe>=6.0; python_version>='3.6.0'",
         'kaitaistruct>=0.7',
+        'packaging>=22',
         'pyasn1>=0.3.1',
         'pyOpenSSL>=22.0.0',
         'pyparsing>=2.4.2',

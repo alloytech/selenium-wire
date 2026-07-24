@@ -3,13 +3,11 @@
 from enum import Enum
 
 from kaitaistruct import BytesIO, KaitaiStream, KaitaiStruct
-from kaitaistruct import __version__ as ks_version
-from pkg_resources import parse_version
 
 from .vlq_base128_le import VlqBase128Le
 
-if parse_version(ks_version) < parse_version('0.7'):
-    raise Exception("Incompatible Kaitai Struct Python API: 0.7 or later is required, but you have %s" % (ks_version))
+# The generated kaitaistruct version check needed pkg_resources.parse_version,
+# removed in setuptools 82. install_requires enforces kaitaistruct>=0.7 instead.
 
 class GoogleProtobuf(KaitaiStruct):
     """Google Protocol Buffers (AKA protobuf) is a popular data
